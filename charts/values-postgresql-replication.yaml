@@ -1,0 +1,147 @@
+architecture: replication
+auth:
+  username: exchange_app
+  password: change-me
+  database: exchange_db
+  replicationUsername: repl_user
+  replicationPassword: change-me-repl
+  enableReplication: true
+primary:
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: "zfs-local"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  service:
+    type: ClusterIP
+readReplicas:
+  count: 2
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: "zfs-local"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 384Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+replication:
+  synchronousCommit: "off"
+  numSynchronousReplicas: 0
+postgresqlExtendedConf:
+  wal_level: replica
+  max_wal_senders: 10
+  wal_keep_size: 256MB
+  archive_mode: "on"
+  archive_command: "/bin/true"
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 30s
+    scrapeTimeout: 10s
+  prometheusRule:
+    enabled: true
+    rules: 
+      - alert: PostgresDown
+        expr: absent(pg_up) or pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL primary appears down
+          description: No pg_up metric or pg_up==0 for over 2 minutes.
+      - alert: PostgresHighConnectionUtilization
+        expr: (sum(pg_stat_activity_count) / max(pg_settings_max_connections)) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High PostgreSQL connection usage
+          description: Connection usage above 80% for 5 minutes.
+      - alert: PostgresReplicationLagHigh
+        expr: max(pg_replication_lag_seconds) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL replication lag high
+          description: Replica lag exceeds 30 seconds.
+      - alert: PostgresDeadlocks
+        expr: increase(pg_stat_database_deadlocks[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Deadlocks detected in PostgreSQL
+          description: One or more deadlocks occurred in the last 5 minutes.
+      - alert: PostgresCheckpointRateHigh
+        expr: increase(pg_stat_bgwriter_checkpoints_timed[15m]) > 12
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: High timed checkpoint rate
+          description: More than 12 timed checkpoints in 15 minutes may indicate tuning needed.     
+tls:
+  enabled: false
+extraDeploy:
+  - |-
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: pg-backups
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 20Gi
+      storageClassName: "zfs-local"
+  - |-
+    apiVersion: batch/v1
+    kind: CronJob
+    metadata:
+      name: pg-backup-daily
+    spec:
+      schedule: "0 2 * * *"
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+      jobTemplate:
+        spec:
+          template:
+            spec:
+              restartPolicy: Never
+              containers:
+                - name: pg-backup
+                  image: bitnami/postgresql:16
+                  imagePullPolicy: IfNotPresent
+                  env:
+                    - name: PGPASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                          name: pg-postgresql
+                          key: password
+                  command: ["/bin/sh","-c"]
+                  args:
+                    - |
+                      set -e;
+                      TS=$(date -u +%Y%m%d-%H%M%S);
+                      pg_dump -h pg-postgresql-primary -U exchange_app -d exchange_db -F c -Z 9 -f /backups/$TS.dump;
+                      (ls -1t /backups/*.dump | tail -n +8 | xargs -r rm --) || true;
+                  volumeMounts:
+                    - name: backup-data
+                      mountPath: /backups
+              volumes:
+                - name: backup-data
+                  persistentVolumeClaim:
+                    claimName: pg-backups

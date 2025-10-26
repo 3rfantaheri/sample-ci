@@ -1,0 +1,104 @@
+crds:
+  enabled: true
+  upgradeJob:
+   enabled: false
+
+alertmanager:
+  enabled: true
+  templateFiles: 
+    candoemail.tmpl: |-
+      # The default SMTP From header field.
+      [ smtp_from: alert@cando.ac ]
+      # The default SMTP smarthost used for sending emails, including port number.
+      # Port number usually is 25, or 587 for SMTP over TLS (sometimes referred to as STARTTLS).
+      # Example: smtp.example.org:587
+      [ smtp_smarthost: smtp.cando.ac ]
+      # SMTP Auth using CRAM-MD5, LOGIN and PLAIN. If empty, Alertmanager doesn't authenticate to the SMTP server.
+      [ smtp_auth_username: alert@cando.ac ]
+      # SMTP Auth using LOGIN and PLAIN. 
+      [ smtp_auth_password: 83748324 ]
+
+  config:
+    global:
+      resolve_timeout: 5m
+    inhibit_rules:
+      - source_matchers:
+          - 'severity = critical'
+        target_matchers:
+          - 'severity =~ warning|info'
+        equal:
+          - 'namespace'
+          - 'alertname'
+      - source_matchers:
+          - 'severity = warning'
+        target_matchers:
+          - 'severity = info'
+        equal:
+          - 'namespace'
+          - 'alertname'
+      - source_matchers:
+          - 'alertname = InfoInhibitor'
+        target_matchers:
+          - 'severity = info'
+        equal:
+          - 'namespace'
+      - target_matchers:
+          - 'alertname = InfoInhibitor'
+    route:
+      group_by: ['namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'null'
+      routes:
+      - matchers:
+          - severity: critical
+          - team: devops
+        receiver: devops
+      - receiver: 'null'
+        matchers:
+          - alertname = "Watchdog"
+    receivers:
+    - name: 'null'
+    - receiver: devops
+      webhook_config:
+        - url: https://mysmsgateway.ir/send/token="sdfsdfkljhsdfksdfkhsdfvds"
+          send_resolved: true
+          max_alerts: 20
+
+    templates:
+    - '/etc/alertmanager/config/*.tmpl'
+  ingress:
+    enabled: true
+    ingressClassName: "nginx"
+    hosts:
+      - alert.lobox.local
+
+grafana:
+  enabled: true
+
+  ingress:
+    enabled: true
+    ingressClassName: "nginx"
+    hosts:
+      - grafana.lobox.local
+
+prometheusOperatpor:
+  enabled: true
+
+prometheus: 
+  enabled: true
+
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: true
+    ruleSelectorNilUsesHelmValues: true
+    podMonitorSelectorNilUsesHelmValues: true
+    probeSelectorNilUsesHelmValues: true
+    retention: 10d
+    logLevel: error
+
+  ingress:
+    enabled: true
+    ingressClassName: "nginx"
+    hosts:
+      - prometheus.lobox.local

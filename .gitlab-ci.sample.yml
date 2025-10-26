@@ -1,0 +1,98 @@
+stages:
+  - test
+  - build
+  - migrate
+  - deploy
+  - loadtest
+
+variables:
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  FULL_IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+  LATEST_IMAGE: "$CI_REGISTRY_IMAGE:latest"
+  K8S_NAMESPACE: "exchange"
+
+unit-tests:
+  stage: test
+  image: python:3.12-slim
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+  before_script:
+    - pip install --no-cache-dir -r Exchange/requirements.txt
+  script:
+    - python Exchange/manage.py test
+
+build-image:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - name: docker:dind
+      command: ["--tls=false"]
+  variables:
+    DOCKER_DRIVER: overlay2
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build --pull --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --build-arg VCS_REF="$CI_COMMIT_SHORT_SHA" -f Exchange/Dockerfile -t "$FULL_IMAGE" -t "$LATEST_IMAGE" Exchange
+    - docker push "$FULL_IMAGE"
+    - docker push "$LATEST_IMAGE"
+  artifacts:
+    reports:
+      dotenv: build.env
+  after_script:
+    - echo "IMAGE_TAG=$IMAGE_TAG" > build.env
+
+migrate:
+  stage: migrate
+  image: bitnami/kubectl:latest
+  needs: ["build-image"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+  before_script:
+    - '[[ -n "$KUBE_CONFIG" ]] || { echo "KUBE_CONFIG variable not set"; exit 1; }'
+    - echo "$KUBE_CONFIG" | base64 -d > kubeconfig.yml || echo "$KUBE_CONFIG" > kubeconfig.yml
+    - export KUBECONFIG=$(pwd)/kubeconfig.yml
+    - export IMAGE_REPLACEMENT="$IMAGE_NAME:$IMAGE_TAG"
+    - sed "s#__IMAGE__#$IMAGE_REPLACEMENT#" k8s/migrate-job.yaml > k8s/migrate-rendered.yaml
+  script:
+    - kubectl apply -f k8s/migrate-rendered.yaml
+    - kubectl wait --for=condition=complete --timeout=300s job/exchange-migrate -n "$K8S_NAMESPACE" || {
+        echo "Migration job failed"; kubectl logs -l job-name=exchange-migrate -n "$K8S_NAMESPACE" --tail=200; exit 1; }
+    - echo "Migrations & collectstatic completed."
+  after_script:
+    - kubectl logs -l job-name=exchange-migrate -n "$K8S_NAMESPACE" --tail=100 || true
+  environment:
+    name: production
+  only:
+    - master
+
+deploy:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  needs: ["build-image", "migrate"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+  before_script:
+    - '[[ -n "$KUBE_CONFIG" ]] || { echo "KUBE_CONFIG variable not set"; exit 1; }'
+    - echo "$KUBE_CONFIG" | base64 -d > kubeconfig.yml || echo "$KUBE_CONFIG" > kubeconfig.yml
+    - export KUBECONFIG=$(pwd)/kubeconfig.yml
+  script:
+    - export IMAGE_REPLACEMENT="$IMAGE_NAME:$IMAGE_TAG"
+    - sed "s#__IMAGE__#$IMAGE_REPLACEMENT#" k8s/exchange.yaml > k8s/rendered.yaml
+    - kubectl apply -f k8s/rendered.yaml
+  environment:
+    name: production
+  only:
+    - master
+
+loadtest:
+  stage: loadtest
+  image: grafana/k6:latest
+  needs: ["deploy"]
+  rules:
+    - when: manual
+  script:
+    - k6 run loadtest/k6-smoke.js
+
