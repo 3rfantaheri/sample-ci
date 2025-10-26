@@ -5,18 +5,6 @@ crds:
 
 alertmanager:
   enabled: true
-  templateFiles: 
-    candoemail.tmpl: |-
-      # The default SMTP From header field.
-      [ smtp_from: alert@cando.ac ]
-      # The default SMTP smarthost used for sending emails, including port number.
-      # Port number usually is 25, or 587 for SMTP over TLS (sometimes referred to as STARTTLS).
-      # Example: smtp.example.org:587
-      [ smtp_smarthost: smtp.cando.ac ]
-      # SMTP Auth using CRAM-MD5, LOGIN and PLAIN. If empty, Alertmanager doesn't authenticate to the SMTP server.
-      [ smtp_auth_username: alert@cando.ac ]
-      # SMTP Auth using LOGIN and PLAIN. 
-      [ smtp_auth_password: 83748324 ]
 
   config:
     global:
